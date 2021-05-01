@@ -1,6 +1,9 @@
 //! Transaction types
 use crate::{
-    types::{Address, Bloom, Bytes, Log, NameOrAddress, Signature, H256, U256, U64},
+    types::{
+        AccessList, Address, Bloom, Bytes, Eip2930TransactionRequest, Log, NameOrAddress,
+        Signature, H256, U256, U64,
+    },
     utils::keccak256,
 };
 
@@ -83,6 +86,14 @@ impl TransactionRequest {
             value: Some(value.into()),
             ..Default::default()
         }
+    }
+
+    /// Sets the `from` field in the transaction to the provided value
+    pub fn with_access_list<T: Into<AccessList>>(
+        self,
+        access_list: T,
+    ) -> Eip2930TransactionRequest {
+        Eip2930TransactionRequest::new(self, access_list.into())
     }
 
     // Builder pattern helpers
@@ -179,7 +190,7 @@ impl TransactionRequest {
         rlp.out().freeze().into()
     }
 
-    fn rlp_base(&self, rlp: &mut RlpStream) {
+    pub(crate) fn rlp_base(&self, rlp: &mut RlpStream) {
         rlp_opt(rlp, self.nonce);
         rlp_opt(rlp, self.gas_price);
         rlp_opt(rlp, self.gas);
@@ -380,6 +391,9 @@ pub struct TransactionReceipt {
     /// Logs bloom
     #[serde(rename = "logsBloom")]
     pub logs_bloom: Bloom,
+    /// Transaction type, Some(1) for AccessList transaction, None for Legacy
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub transaction_type: Option<U64>,
 }
 
 #[cfg(test)]
