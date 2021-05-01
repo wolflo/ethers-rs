@@ -186,9 +186,9 @@ pub trait Middleware: Sync + Send + Debug {
         self.inner().get_block_number().await.map_err(FromErr::from)
     }
 
-    async fn send_transaction(
+    async fn send_transaction<T: Send + Sync + Into<TransactionEnvelope>>(
         &self,
-        tx: TransactionRequest,
+        tx: T,
         block: Option<BlockId>,
     ) -> Result<PendingTransaction<'_, Self::Provider>, Self::Error> {
         self.inner()
@@ -413,9 +413,9 @@ pub trait Middleware: Sync + Send + Debug {
     // Parity `trace` support
 
     /// Executes the given call and returns a number of possible traces for it
-    async fn trace_call(
+    async fn trace_call<T: Send + Sync + Into<TransactionEnvelope>>(
         &self,
-        req: TransactionRequest,
+        req: T,
         trace_type: Vec<TraceType>,
         block: Option<BlockNumber>,
     ) -> Result<BlockTrace, Self::Error> {

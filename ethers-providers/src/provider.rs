@@ -9,8 +9,9 @@ use ethers_core::{
     abi::{self, Detokenize, ParamType},
     types::{
         Address, Block, BlockId, BlockNumber, BlockTrace, Bytes, Filter, Log, NameOrAddress,
-        Selector, Signature, Trace, TraceFilter, TraceType, Transaction, TransactionReceipt,
-        TransactionRequest, TxHash, TxpoolContent, TxpoolInspect, TxpoolStatus, H256, U256, U64,
+        Selector, Signature, Trace, TraceFilter, TraceType, Transaction, TransactionEnvelope,
+        TransactionReceipt, TransactionRequest, TxHash, TxpoolContent, TxpoolInspect, TxpoolStatus,
+        H256, U256, U64,
     },
     utils,
 };
@@ -280,29 +281,24 @@ impl<P: JsonRpcClient> Middleware for Provider<P> {
 
     /// Sends the transaction to the entire Ethereum network and returns the transaction's hash
     /// This will consume gas from the account that signed the transaction.
-    async fn send_transaction(
+    async fn send_transaction<T: Send + Sync + Into<TransactionEnvelope>>(
         &self,
-        mut tx: TransactionRequest,
+        tx: T,
         _: Option<BlockId>,
     ) -> Result<PendingTransaction<'_, P>, ProviderError> {
-        if tx.from.is_none() {
-            tx.from = self.3;
-        }
+        let mut tx = tx.into();
 
-        if tx.gas.is_none() {
-            tx.gas = Some(self.estimate_gas(&tx).await?);
-        }
-
-        if let Some(NameOrAddress::Name(ref ens_name)) = tx.to {
-            // resolve to an address
-            let addr = self.resolve_name(&ens_name).await?;
-
-            // set the value
-            tx.to = Some(addr.into())
-        }
+        // Populate any of the transaction's fields
+        match tx {
+            TransactionEnvelope::Legacy(ref mut inner) => {
+                self.populate_transaction(inner).await?;
+            }
+            TransactionEnvelope::Eip2930(ref mut eip2930_tx) => {
+                self.populate_transaction(&mut eip2930_tx.tx).await?;
+            }
+        };
 
         let tx_hash = self.request("eth_sendTransaction", [tx]).await?;
-
         Ok(PendingTransaction::new(tx_hash, self).interval(self.get_interval()))
     }
 
@@ -513,13 +509,13 @@ impl<P: JsonRpcClient> Middleware for Provider<P> {
     }
 
     /// Executes the given call and returns a number of possible traces for it
-    async fn trace_call(
+    async fn trace_call<T: Send + Sync + Into<TransactionEnvelope>>(
         &self,
-        req: TransactionRequest,
+        req: T,
         trace_type: Vec<TraceType>,
         block: Option<BlockNumber>,
     ) -> Result<BlockTrace, ProviderError> {
-        let req = utils::serialize(&req);
+        let req = utils::serialize(&req.into());
         let block = utils::serialize(&block.unwrap_or(BlockNumber::Latest));
         let trace_type = utils::serialize(&trace_type);
         self.request("trace_call", [req, trace_type, block]).await
@@ -653,6 +649,26 @@ impl<P: JsonRpcClient> Middleware for Provider<P> {
 }
 
 impl<P: JsonRpcClient> Provider<P> {
+    async fn populate_transaction(&self, tx: &mut TransactionRequest) -> Result<(), ProviderError> {
+        if tx.from.is_none() {
+            tx.from = self.3;
+        }
+
+        if tx.gas.is_none() {
+            tx.gas = Some(self.estimate_gas(&tx).await?);
+        }
+
+        if let Some(NameOrAddress::Name(ref ens_name)) = tx.to {
+            // resolve to an address
+            let addr = self.resolve_name(&ens_name).await?;
+
+            // set the value
+            tx.to = Some(addr.into())
+        }
+
+        Ok(())
+    }
+
     async fn query_resolver<T: Detokenize>(
         &self,
         param: ParamType,
