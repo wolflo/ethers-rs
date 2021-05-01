@@ -76,8 +76,8 @@ impl From<Eip2930TransactionRequest> for TransactionEnvelope {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub struct Eip2930TransactionRequest {
     #[serde(flatten)]
-    tx: TransactionRequest,
-    access_list: AccessList,
+    pub tx: TransactionRequest,
+    pub access_list: AccessList,
 }
 
 impl Eip2930TransactionRequest {
