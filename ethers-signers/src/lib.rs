@@ -63,7 +63,7 @@ pub use ledger::{
 pub use yubihsm;
 
 use async_trait::async_trait;
-use ethers_core::types::{Address, Signature, TransactionRequest};
+use ethers_core::types::{Address, Signature, TransactionEnvelope};
 use std::error::Error;
 
 /// Applies [EIP155](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-155.md)
@@ -91,9 +91,9 @@ pub trait Signer: std::fmt::Debug + Send + Sync {
     ) -> Result<Signature, Self::Error>;
 
     /// Signs the transaction
-    async fn sign_transaction(
+    async fn sign_transaction<T: Send + Sync + Into<TransactionEnvelope>>(
         &self,
-        message: &TransactionRequest,
+        message: T,
     ) -> Result<Signature, Self::Error>;
 
     /// Returns the signer's Ethereum Address

@@ -4,7 +4,7 @@ pub mod types;
 use crate::Signer;
 use app::LedgerEthereum;
 use async_trait::async_trait;
-use ethers_core::types::{Address, Signature, TransactionRequest};
+use ethers_core::types::{Address, Signature, TransactionEnvelope};
 use types::LedgerError;
 
 #[async_trait]
@@ -20,9 +20,9 @@ impl Signer for LedgerEthereum {
     }
 
     /// Signs the transaction
-    async fn sign_transaction(
+    async fn sign_transaction<T: Send + Sync + Into<TransactionEnvelope>>(
         &self,
-        message: &TransactionRequest,
+        tx: T,
     ) -> Result<Signature, Self::Error> {
         self.sign_tx(message, self.chain_id).await
     }
