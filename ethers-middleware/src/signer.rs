@@ -1,9 +1,4 @@
-use ethers_core::{
-    types::{
-        Address, BlockId, Bytes, NameOrAddress, Signature, Transaction, TransactionRequest, U256,
-    },
-    utils::keccak256,
-};
+use ethers_core::{types::{Address, BlockId, Bytes, NameOrAddress, Signature, Transaction, TransactionEnvelope, TransactionRequest, U256}, utils::keccak256};
 use ethers_providers::{FromErr, Middleware, PendingTransaction};
 use ethers_signers::Signer;
 
@@ -119,7 +114,7 @@ where
 
     async fn sign_transaction(
         &self,
-        tx: TransactionRequest,
+        tx: TransactionEnvelope,
     ) -> Result<Transaction, SignerMiddlewareError<M, S>> {
         // The nonce, gas and gasprice fields must already be populated
         let nonce = tx.nonce.ok_or(SignerMiddlewareError::NonceMissing)?;
@@ -242,19 +237,20 @@ where
     /// Signs and broadcasts the transaction. The optional parameter `block` can be passed so that
     /// gas cost and nonce calculations take it into account. For simple transactions this can be
     /// left to `None`.
-    async fn send_transaction(
+    async fn send_transaction<T: Send + Sync + Into<TransactionEnvelope>>(
         &self,
-        mut tx: TransactionRequest,
+        mut tx: T,
         block: Option<BlockId>,
     ) -> Result<PendingTransaction<'_, Self::Provider>, Self::Error> {
-        if let Some(NameOrAddress::Name(ens_name)) = tx.to {
-            let addr = self
-                .inner
-                .resolve_name(&ens_name)
-                .await
-                .map_err(SignerMiddlewareError::MiddlewareError)?;
-            tx.to = Some(addr.into())
-        }
+        let tx = tx.into();
+        match tx {
+            TransactionEnvelope::Legacy(ref mut inner) => {
+                self.fill_transaction(inner, block).await?;
+            }
+            TransactionEnvelope::Eip2930(ref mut eip2930_tx) => {
+                self.fill_transaction(&mut eip2930_tx.tx, block).await?;
+            }
+        };
 
         // fill any missing fields
         self.fill_transaction(&mut tx, block).await?;
