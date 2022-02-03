@@ -519,7 +519,7 @@ fn parse_data(content: &str) -> SolData {
     let mut imports = Vec::<SolDataUnit<PathBuf>>::new();
     match solang_parser::parse(content, 0) {
         Ok(units) => {
-            for unit in units.0 {
+            for unit in units.0.0 {
                 match unit {
                     SourceUnitPart::PragmaDirective(loc, _, pragma, value) => {
                         if pragma.name == "solidity" {
