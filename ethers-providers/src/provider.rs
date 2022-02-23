@@ -223,6 +223,90 @@ impl<P: JsonRpcClient> Provider<P> {
     }
 }
 
+impl<P: JsonRpcClient> Provider<P> {
+    pub fn tx_builder<'a>(&'a self, tx: &'a mut TypedTransaction) -> TxBuilder<'a, Self> {
+        TxBuilder { tx, client: self, gas_res: None }
+    }
+}
+pub struct TxBuilder<'a, M: Middleware> {
+    tx: &'a mut TypedTransaction,
+    client: &'a M,
+    gas_res: Option<Result<U256, M::Error>>,
+}
+impl<'a, M: Middleware> TxBuilder<'a, M> {
+    pub fn fill_from(&mut self) -> &mut TxBuilder<'a, M> {
+        if self.tx.from().is_none() {
+            if let Some(default_sender) = self.client.default_sender() {
+                self.tx.set_from(default_sender);
+            }
+        }
+        self
+    }
+
+    pub async fn fill_to(&mut self) -> Result<&mut TxBuilder<'a, M>, M::Error> {
+        // set the ENS name
+        if let Some(NameOrAddress::Name(ref ens_name)) = self.tx.to() {
+            let addr = self.client.resolve_name(ens_name).await?;
+            self.tx.set_to(addr);
+        }
+        Ok(self)
+    }
+
+    pub async fn fill_gas_price(&mut self) -> Result<&mut TxBuilder<'a, M>, M::Error> {
+        match self.tx {
+            TypedTransaction::Eip2930(_) | TypedTransaction::Legacy(_) => {
+                let gas_price = maybe(self.tx.gas_price(), self.client.get_gas_price()).await?;
+                self.tx.set_gas_price(gas_price);
+            }
+            TypedTransaction::Eip1559(ref mut inner) => {
+                if inner.max_fee_per_gas.is_none() || inner.max_priority_fee_per_gas.is_none() {
+                    let (max_fee_per_gas, max_priority_fee_per_gas) =
+                        self.client.estimate_eip1559_fees(None).await?;
+                    inner.max_fee_per_gas = Some(max_fee_per_gas);
+                    inner.max_priority_fee_per_gas = Some(max_priority_fee_per_gas);
+                };
+            }
+        }
+        Ok(self)
+    }
+
+    pub async fn fill_access_list(
+        &mut self,
+        block: Option<BlockId>,
+    ) -> Result<&mut TxBuilder<'a, M>, M::Error> {
+        if let Some(starting_al) = self.tx.access_list() {
+            if starting_al.0.is_empty() {
+                let (mut gas_res, al_res) = futures_util::join!(
+                    maybe(self.tx.gas().cloned(), self.client.estimate_gas(self.tx)),
+                    self.client.create_access_list(self.tx, block)
+                );
+
+                if let Ok(al_with_gas) = al_res {
+                    // Set access list if it saves gas over the estimated (or previously set) value
+                    if gas_res.is_err() || al_with_gas.gas_used < *gas_res.as_ref().unwrap() {
+                        // Update the gas estimate with the lower amount
+                        gas_res = Ok(al_with_gas.gas_used);
+                        self.tx.set_access_list(al_with_gas.access_list);
+                    }
+                }
+                self.gas_res = Some(gas_res);
+            }
+        }
+        Ok(self)
+    }
+
+    pub async fn fill_gas(&mut self) -> Result<&mut TxBuilder<'a, M>, M::Error> {
+        if self.tx.gas().is_none() {
+            let gas_estimate = match self.gas_res.take() {
+                Some(gas_res) => gas_res?, // re-use previous attempt to estimate gas
+                _ => self.client.estimate_gas(self.tx).await?,
+            };
+            self.tx.set_gas(gas_estimate);
+        }
+        Ok(self)
+    }
+}
+
 #[cfg(feature = "celo")]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -269,68 +353,16 @@ impl<P: JsonRpcClient> Middleware for Provider<P> {
         tx: &mut TypedTransaction,
         block: Option<BlockId>,
     ) -> Result<(), Self::Error> {
-        if let Some(default_sender) = self.default_sender() {
-            if tx.from().is_none() {
-                tx.set_from(default_sender);
-            }
-        }
-
-        // TODO: Join the name resolution and gas price future
-
-        // set the ENS name
-        if let Some(NameOrAddress::Name(ref ens_name)) = tx.to() {
-            let addr = self.resolve_name(ens_name).await?;
-            tx.set_to(addr);
-        }
-
-        // fill gas price
-        match tx {
-            TypedTransaction::Eip2930(_) | TypedTransaction::Legacy(_) => {
-                let gas_price = maybe(tx.gas_price(), self.get_gas_price()).await?;
-                tx.set_gas_price(gas_price);
-            }
-            TypedTransaction::Eip1559(ref mut inner) => {
-                if inner.max_fee_per_gas.is_none() || inner.max_priority_fee_per_gas.is_none() {
-                    let (max_fee_per_gas, max_priority_fee_per_gas) =
-                        self.estimate_eip1559_fees(None).await?;
-                    inner.max_fee_per_gas = Some(max_fee_per_gas);
-                    inner.max_priority_fee_per_gas = Some(max_priority_fee_per_gas);
-                };
-            }
-        }
-
-        // If the tx has an access list but it is empty, it is an Eip1559 or Eip2930 tx,
-        // and we attempt to populate the acccess list. This may require `eth_estimateGas`,
-        // in which case we save the result in maybe_gas_res for later
-        let mut maybe_gas_res = None;
-        if let Some(starting_al) = tx.access_list() {
-            if starting_al.0.is_empty() {
-                let (mut gas_res, al_res) = futures_util::join!(
-                    maybe(tx.gas().cloned(), self.estimate_gas(tx)),
-                    self.create_access_list(tx, block)
-                );
-
-                if let Ok(al_with_gas) = al_res {
-                    // Set access list if it saves gas over the estimated (or previously set) value
-                    if gas_res.is_err() || al_with_gas.gas_used < *gas_res.as_ref().unwrap() {
-                        // Update the gas estimate with the lower amount
-                        gas_res = Ok(al_with_gas.gas_used);
-                        tx.set_access_list(al_with_gas.access_list);
-                    }
-                }
-                maybe_gas_res = Some(gas_res);
-            }
-        }
-
-        // Set gas to estimated value only if it was not set by the caller,
-        // even if the access list has been populated and saves gas
-        if tx.gas().is_none() {
-            let gas_estimate = match maybe_gas_res {
-                Some(gas_res) => gas_res?, // re-use previous attempt to estimate gas
-                _ => self.estimate_gas(tx).await?,
-            };
-            tx.set_gas(gas_estimate);
-        }
+        self.tx_builder(tx)
+            .fill_from()
+            .fill_to()
+            .await?
+            .fill_gas_price()
+            .await?
+            .fill_access_list(block)
+            .await?
+            .fill_gas()
+            .await?;
 
         Ok(())
     }
